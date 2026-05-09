@@ -7,9 +7,12 @@ const { createClient } = require('redis');
 
 let client = null;
 let connected = false;
+let connectionPromise = null;
 
 async function getClient() {
   if (client && connected) return client;
+  if (!process.env.REDIS_HOST) return null;
+  if (connectionPromise) return connectionPromise;
 
   client = createClient({
     socket: {
@@ -23,28 +26,39 @@ async function getClient() {
     password: process.env.REDIS_PASSWORD || undefined,
   });
 
-  client.on('connect', () => {
+  attachRedisEventHandlers(client);
+
+  connectionPromise = client.connect()
+    .then(() => client)
+    .catch(() => {
+      console.warn('[Redis] Could not connect, running without Redis cache');
+      client = null;
+      return null;
+    })
+    .finally(() => {
+      connectionPromise = null;
+    });
+
+  return connectionPromise;
+}
+
+function attachRedisEventHandlers(redisClient) {
+  if (redisClient.__eventsAttached) return;
+  redisClient.__eventsAttached = true;
+
+  redisClient.on('connect', () => {
     console.log('[Redis] Connected');
     connected = true;
   });
 
-  client.on('error', (err) => {
+  redisClient.on('error', (err) => {
     console.warn('[Redis] Connection error (will use in-memory fallback):', err.message);
     connected = false;
   });
 
-  client.on('end', () => {
+  redisClient.on('end', () => {
     connected = false;
   });
-
-  try {
-    await client.connect();
-  } catch (err) {
-    console.warn('[Redis] Could not connect, running without Redis cache');
-    client = null;
-  }
-
-  return client;
 }
 
 // In-memory fallback when Redis is unavailable
