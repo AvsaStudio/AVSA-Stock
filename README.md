@@ -1,4 +1,4 @@
-# Bloomberg Financial Data Pipeline Dashboard
+#  Financial Data Pipeline Dashboard
 
 Real-time financial analytics dashboard demonstrating a full data engineering stack: React frontend, Node.js API, Kafka streaming, Redis caching, Cassandra time-series storage, Spark stream processing, Airflow scheduling, and S3 archival.
 
@@ -57,10 +57,6 @@ Real-time financial analytics dashboard demonstrating a full data engineering st
 cd bloomberg-dashboard
 ./start.sh
 ```
-Opens:
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:4000
-- Health check: http://localhost:4000/health
 
 ### Phase 2+: Full Stack with Docker
 ```bash
