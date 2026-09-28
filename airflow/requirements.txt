@@ -1,0 +1,4 @@
+# Versions resolved by the pinned Airflow 2.8.0 / Python 3.11 constraints.
+boto3
+redis
+cassandra-driver

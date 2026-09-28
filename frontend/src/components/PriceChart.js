@@ -10,11 +10,13 @@ import {
   ReferenceLine,
 } from 'recharts';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:4000';
+import { getJson } from '../api';
 
 export default function PriceChart({ symbol, prices }) {
   const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [attempt, setAttempt] = useState(0);
   const bufferRef = useRef([]);
 
   // Fetch history when symbol changes
@@ -24,36 +26,42 @@ export default function PriceChart({ symbol, prices }) {
       setHistory([]);
       return;
     }
+    const controller = new AbortController();
+    bufferRef.current = [];
+    setHistory([]);
     setLoading(true);
-    fetch(`${API_URL}/api/stocks/${symbol}/history?limit=50`)
-      .then((r) => r.json())
+    setError(null);
+    getJson(`/api/stocks/${symbol}/history?limit=50`, { signal: controller.signal })
       .then((data) => {
-        if (data.success) {
-          const formatted = data.data.map((d) => ({
+        if (!controller.signal.aborted) {
+          const formatted = data.map((d) => ({
             time: new Date(d.timestamp).toLocaleTimeString(),
+            timestamp: d.timestamp,
             price: d.price,
-          })).reverse();
+          }));
           bufferRef.current = formatted;
           setHistory(formatted);
         }
       })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [symbol]);
+      .catch((err) => { if (!controller.signal.aborted) setError(err.message); })
+      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+    return () => controller.abort();
+  }, [symbol, attempt]);
 
   // Append live ticks from the price feed
   useEffect(() => {
-    if (!symbol || !prices.length) return;
+    if (!symbol || loading || !prices.length) return;
     const tick = prices.find((p) => p.symbol === symbol);
-    if (!tick) return;
+    if (!tick || bufferRef.current.at(-1)?.timestamp === tick.timestamp) return;
 
     const newPoint = {
+      timestamp: tick.timestamp,
       time: new Date(tick.timestamp || Date.now()).toLocaleTimeString(),
       price: tick.price,
     };
     bufferRef.current = [...bufferRef.current.slice(-99), newPoint];
     setHistory([...bufferRef.current]);
-  }, [prices, symbol]);
+  }, [prices, symbol, loading]);
 
   if (!symbol) {
     return (
@@ -87,9 +95,10 @@ export default function PriceChart({ symbol, prices }) {
             </>
           )}
         </div>
-        <span style={styles.label}>PRICE HISTORY (INTRADAY)</span>
+        <span style={styles.label}>RECENT PRICE HISTORY</span>
       </div>
 
+      {error && <div className="panel-error" role="alert">{error} <button onClick={() => setAttempt((value) => value + 1)}>Retry</button></div>}
       {loading ? (
         <div style={styles.loading}>Loading chart...</div>
       ) : (

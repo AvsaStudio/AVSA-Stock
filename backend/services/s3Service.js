@@ -1,78 +1,19 @@
-/**
- * S3 / MinIO Service
- * Raw data archival and daily report storage
- */
-
-const { S3Client, PutObjectCommand, GetObjectCommand, ListObjectsV2Command } = require('@aws-sdk/client-s3');
-
-let s3Client = null;
-
-function getS3Client() {
-  if (s3Client) return s3Client;
-
-  s3Client = new S3Client({
+const { S3Client, GetObjectCommand } = require('@aws-sdk/client-s3');
+let client;
+async function getLatestDailyReport() {
+  if (!process.env.S3_ENDPOINT && !process.env.S3_BUCKET) return null;
+  if (!client) client = new S3Client({
     endpoint: process.env.S3_ENDPOINT || undefined,
     region: process.env.S3_REGION || 'us-east-1',
-    credentials: {
-      accessKeyId: process.env.S3_ACCESS_KEY || 'minioadmin',
-      secretAccessKey: process.env.S3_SECRET_KEY || 'minioadmin',
-    },
-    forcePathStyle: !!process.env.S3_ENDPOINT, // required for MinIO
+    credentials: process.env.S3_ACCESS_KEY ? { accessKeyId: process.env.S3_ACCESS_KEY, secretAccessKey: process.env.S3_SECRET_KEY } : undefined,
+    forcePathStyle: Boolean(process.env.S3_ENDPOINT), maxAttempts: 2,
   });
-
-  return s3Client;
-}
-
-const BUCKET = process.env.S3_BUCKET || 'financial-dashboard';
-
-async function uploadRawData(data, path) {
   try {
-    const client = getS3Client();
-    await client.send(new PutObjectCommand({
-      Bucket: BUCKET,
-      Key: path,
-      Body: JSON.stringify(data, null, 2),
-      ContentType: 'application/json',
-    }));
-    console.log(`[S3] Uploaded: ${path}`);
+    const result = await client.send(new GetObjectCommand({ Bucket: process.env.S3_BUCKET || 'financial-dashboard', Key: 'daily-reports/latest.json' }), { abortSignal: AbortSignal.timeout(3000) });
+    return JSON.parse(await result.Body.transformToString());
   } catch (err) {
-    console.warn('[S3] Upload error:', err.message);
+    if (err.name === 'NoSuchKey' || err.$metadata?.httpStatusCode === 404) return null;
+    throw Object.assign(new Error('Daily report storage is unavailable'), { status: 503 });
   }
 }
-
-async function uploadDailyReport(report, date) {
-  const path = `daily-reports/${date}/report.json`;
-  return uploadRawData(report, path);
-}
-
-async function uploadRawStockSnapshot(data) {
-  const ts = new Date().toISOString().replace(/[:.]/g, '-');
-  const date = new Date().toISOString().slice(0, 10);
-  const path = `raw-data/${date}/stocks-${ts}.json`;
-  return uploadRawData(data, path);
-}
-
-async function listFiles(prefix) {
-  try {
-    const client = getS3Client();
-    const result = await client.send(new ListObjectsV2Command({
-      Bucket: BUCKET,
-      Prefix: prefix,
-    }));
-    return (result.Contents || []).map((obj) => ({
-      key: obj.Key,
-      size: obj.Size,
-      lastModified: obj.LastModified,
-    }));
-  } catch (err) {
-    console.warn('[S3] List error:', err.message);
-    return [];
-  }
-}
-
-module.exports = {
-  uploadRawData,
-  uploadDailyReport,
-  uploadRawStockSnapshot,
-  listFiles,
-};
+module.exports = { getLatestDailyReport };

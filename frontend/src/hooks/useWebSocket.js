@@ -1,118 +1,59 @@
-/**
- * useWebSocket hook
- * Connects to the backend WebSocket and delivers real-time updates.
- * Falls back to polling when WebSocket is unavailable.
- */
-
-import { useEffect, useRef, useState, useCallback } from 'react';
-
-const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:4000/ws';
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:4000';
-const POLL_INTERVAL = 3000;
+import { useEffect, useState } from 'react';
+import { WS_URL } from '../config';
+import { getJson } from '../api';
 
 export function useWebSocket() {
-  const [prices, setPrices] = useState([]);
-  const [news, setNews] = useState([]);
-  const [summary, setSummary] = useState(null);
-  const [connected, setConnected] = useState(false);
-  const [lastUpdate, setLastUpdate] = useState(null);
-
-  const wsRef = useRef(null);
-  const pollRef = useRef(null);
-  const mountedRef = useRef(true);
-
-  const fetchViaRest = useCallback(async () => {
-    try {
-      const [priceRes, newsRes, summaryRes] = await Promise.all([
-        fetch(`${API_URL}/api/stocks/latest`),
-        fetch(`${API_URL}/api/news`),
-        fetch(`${API_URL}/api/analytics/summary`),
-      ]);
-      const [pd, nd, sd] = await Promise.all([
-        priceRes.json(),
-        newsRes.json(),
-        summaryRes.json(),
-      ]);
-      if (!mountedRef.current) return;
-      if (pd.success) setPrices(pd.data);
-      if (nd.success) setNews(nd.data);
-      if (sd.success) setSummary(sd.data);
-      setLastUpdate(new Date());
-    } catch (err) {
-      console.warn('[useWebSocket] REST poll error:', err.message);
-    }
-  }, []);
-
-  const startPolling = useCallback(() => {
-    if (pollRef.current) return;
-    fetchViaRest();
-    pollRef.current = setInterval(fetchViaRest, POLL_INTERVAL);
-  }, [fetchViaRest]);
-
-  const stopPolling = useCallback(() => {
-    if (pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, []);
-
+  const [state, setState] = useState({ prices: [], news: [], summary: null, connected: false, lastUpdate: null, error: null, source: null, simulated: null, newsError: null });
   useEffect(() => {
-    mountedRef.current = true;
-
+    let disposed = false, socket, reconnectTimer, pollTimer, pollController, polling = false;
+    const update = (snapshot) => {
+      if (!disposed) setState((prev) => ({ ...prev, ...snapshot, error: null, lastUpdate: new Date(snapshot.timestamp) }));
+    };
+    const poll = async () => {
+      if (disposed || polling) return;
+      polling = true;
+      const controller = new AbortController();
+      pollController = controller;
+      try {
+        const snapshot = await getJson('/api/snapshot', { signal: controller.signal });
+        if (!controller.signal.aborted) update(snapshot);
+      } catch (err) {
+        if (!disposed && err.name !== 'AbortError') setState((prev) => ({ ...prev, error: err.message }));
+      } finally { polling = false; }
+    };
+    const startPolling = () => {
+      if (pollTimer) return;
+      poll();
+      pollTimer = setInterval(poll, 3000);
+    };
+    const stopPolling = () => { clearInterval(pollTimer); pollTimer = null; pollController?.abort(); };
+    const reconnect = () => {
+      if (!disposed && !reconnectTimer) reconnectTimer = setTimeout(() => { reconnectTimer = null; connect(); }, 5000);
+    };
     function connect() {
+      if (disposed) return;
       try {
         const ws = new WebSocket(WS_URL);
-        wsRef.current = ws;
-
-        ws.onopen = () => {
-          if (!mountedRef.current) return;
-          setConnected(true);
-          stopPolling();
-          console.log('[WS] Connected');
-        };
-
-        ws.onmessage = (event) => {
-          if (!mountedRef.current) return;
+        socket = ws;
+        ws.onopen = () => { if (!disposed) setState((prev) => ({ ...prev, connected: true })); };
+        ws.onmessage = ({ data }) => {
+          if (disposed) return;
           try {
-            const msg = JSON.parse(event.data);
-            if (msg.type === 'snapshot') {
-              setPrices(msg.prices || []);
-              setNews(msg.news || []);
-              setSummary(msg.summary || null);
-            } else if (msg.type === 'price_update') {
-              setPrices(msg.data || []);
-            } else if (msg.type === 'news_update') {
-              setNews((prev) => [...(msg.data || []), ...prev].slice(0, 30));
-            }
-            setLastUpdate(new Date());
-          } catch {}
+            const message = JSON.parse(data);
+            if (message.type === 'snapshot') { stopPolling(); update(message); }
+            if (message.type === 'feed_error') setState((prev) => ({ ...prev, error: message.error }));
+          } catch { setState((prev) => ({ ...prev, error: 'Received an invalid market update.' })); }
         };
-
         ws.onclose = () => {
-          if (!mountedRef.current) return;
-          setConnected(false);
-          console.warn('[WS] Disconnected, falling back to polling');
-          startPolling();
-          // Reconnect after 5s
-          setTimeout(() => { if (mountedRef.current) connect(); }, 5000);
+          if (disposed) return;
+          setState((prev) => ({ ...prev, connected: false }));
+          startPolling(); reconnect();
         };
-
-        ws.onerror = () => {
-          ws.close();
-        };
-      } catch {
-        startPolling();
-      }
+        ws.onerror = () => ws.close();
+      } catch { startPolling(); reconnect(); }
     }
-
-    connect();
-
-    return () => {
-      mountedRef.current = false;
-      if (wsRef.current) wsRef.current.close();
-      stopPolling();
-    };
-  }, [startPolling, stopPolling]);
-
-  return { prices, news, summary, connected, lastUpdate };
+    startPolling(); connect();
+    return () => { disposed = true; clearTimeout(reconnectTimer); stopPolling(); socket?.close(); };
+  }, []);
+  return state;
 }

@@ -1,6 +1,6 @@
 import React from 'react';
 
-export default function NewsFeed({ news }) {
+export default function NewsFeed({ news, error }) {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
@@ -8,8 +8,9 @@ export default function NewsFeed({ news }) {
         <span style={styles.count}>{news.length} articles</span>
       </div>
       <div style={styles.list}>
+        {error && <div className="panel-error" role="alert">News unavailable: {error}</div>}
         {news.length === 0 && (
-          <div style={styles.empty}>Loading news...</div>
+          <div style={styles.empty}>No news available.</div>
         )}
         {news.map((item) => (
           <NewsItem key={item.id || item.timestamp} item={item} />
@@ -46,8 +47,8 @@ function NewsItem({ item }) {
         <span style={styles.source}>{item.source}</span>
         <span style={styles.time}>{timeStr}</span>
       </div>
-      <p style={styles.headline}>{item.headline}</p>
-      <div style={styles.scoreBar}>
+      <p style={styles.headline}>{/^https?:\/\//.test(item.url || '') ? <a href={item.url} target="_blank" rel="noreferrer">{item.headline}</a> : item.headline}</p>
+      {Number.isFinite(item.score) && <div style={styles.scoreBar}>
         <span style={styles.scoreLabel}>Sentiment score</span>
         <div style={styles.barTrack}>
           <div
@@ -62,7 +63,7 @@ function NewsItem({ item }) {
         <span style={{ ...styles.scoreVal, color: sentimentColor }}>
           {item.score > 0 ? '+' : ''}{item.score?.toFixed(2)}
         </span>
-      </div>
+      </div>}
     </div>
   );
 }

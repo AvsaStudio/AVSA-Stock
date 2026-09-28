@@ -1,16 +1,16 @@
 import React from 'react';
 
-export default function Header({ connected, lastUpdate, summary }) {
-  const now = lastUpdate ? lastUpdate.toLocaleTimeString() : '--:--:--';
+export default function Header({ connected, lastUpdate, summary, source, simulated, error, dataAsOf }) {
+  const now = simulated === false && dataAsOf ? `Latest trade: ${dataAsOf.toLocaleString()}` : lastUpdate ? lastUpdate.toLocaleTimeString() : '--:--:--';
 
   return (
-    <header style={styles.header}>
-      <div style={styles.left}>
-        <span style={styles.logo}>▐ BLOOMBERG</span>
-        <span style={styles.subtitle}>Financial Data Pipeline Dashboard</span>
+    <header className="app-header" style={styles.header}>
+      <div className="brand" style={styles.left}>
+        <span style={styles.logo}>▐ AVSA STOCK</span>
+        <span style={styles.subtitle}>{source === 'alpaca-iex' ? 'Alpaca IEX · Single exchange' : simulated ? 'Simulated market data' : 'Connecting…'}</span>
       </div>
 
-      <div style={styles.center}>
+      <div className="market-pills" style={styles.center}>
         {summary && (
           <>
             <Pill
@@ -27,7 +27,7 @@ export default function Header({ connected, lastUpdate, summary }) {
 
       <div style={styles.right}>
         <span style={{ ...styles.dot, background: connected ? '#00d4a0' : '#ff4d4d' }} />
-        <span style={styles.status}>{connected ? 'LIVE' : 'POLLING'}</span>
+        <span style={styles.status}>{error ? 'UNAVAILABLE' : connected ? 'CONNECTED' : 'POLLING'}</span>
         <span style={styles.time}>{now}</span>
       </div>
     </header>

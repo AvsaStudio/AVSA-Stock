@@ -1,19 +1,10 @@
-import React, { useState, useEffect } from 'react';
+import React from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, Cell } from 'recharts';
 
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:4000';
+import { useResource } from '../hooks/useResource';
 
 export default function AnalyticsPanel() {
-  const [report, setReport] = useState(null);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    fetch(`${API_URL}/api/analytics/daily`)
-      .then((r) => r.json())
-      .then((d) => { if (d.success) setReport(d.data); })
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, []);
+  const { data: report, loading, error, retry } = useResource('/api/analytics/daily');
 
   if (loading) {
     return (
@@ -23,6 +14,7 @@ export default function AnalyticsPanel() {
     );
   }
 
+  if (error) return <div className="panel-error" role="alert">{error} <button onClick={retry}>Retry</button></div>;
   if (!report) return null;
 
   const chartData = report.symbolAnalytics?.map((s) => ({
@@ -33,7 +25,7 @@ export default function AnalyticsPanel() {
   return (
     <div style={styles.container}>
       <div style={styles.header}>
-        <span style={styles.title}>DAILY ANALYTICS</span>
+        <span style={styles.title}>{report.scope === 'recent' ? 'RECENT TICK ANALYTICS' : report.scope === 'latest-session' ? 'LATEST SESSION · IEX' : 'STORED DAY ANALYTICS'}</span>
         <span style={styles.date}>{report.date}</span>
       </div>
 
@@ -50,7 +42,7 @@ export default function AnalyticsPanel() {
 
       {/* Daily % change chart */}
       <div style={styles.chartWrap}>
-        <div style={styles.chartLabel}>DAILY % CHANGE BY SYMBOL</div>
+        <div style={styles.chartLabel}>CHANGE OVER REPORT WINDOW</div>
         <ResponsiveContainer width="100%" height={160}>
           <BarChart data={chartData} margin={{ top: 4, right: 8, left: -10, bottom: 0 }}>
             <XAxis dataKey="symbol" tick={{ fontSize: 9, fill: '#4a5568' }} axisLine={false} tickLine={false} />

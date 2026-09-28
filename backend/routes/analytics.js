@@ -1,91 +1,24 @@
-/**
- * Analytics Routes
- * GET /api/analytics/summary   - market summary
- * GET /api/analytics/daily     - today's daily report
- * GET /api/analytics/sentiment - overall market sentiment
- */
+const router = require('express').Router();
+const market = require('../services/marketService');
+const redis = require('../services/redisService');
+const s3 = require('../services/s3Service');
 
-const express = require('express');
-const router = express.Router();
-const { generateMarketSummary, generateNews, SYMBOLS } = require('../dataGenerator');
-const cassandraService = require('../services/cassandraService');
-const s3Service = require('../services/s3Service');
-
-// GET /api/analytics/summary
-router.get('/summary', async (req, res) => {
-  try {
-    const summary = generateMarketSummary();
-    res.json({ success: true, data: summary });
-  } catch (err) {
-    res.status(500).json({ success: false, error: 'Failed to generate summary' });
-  }
+router.get('/summary', async (_req, res, next) => {
+  try { res.json({ success: true, data: (await market.snapshot()).summary }); } catch (err) { next(err); }
 });
-
-// GET /api/analytics/sentiment
-router.get('/sentiment', async (req, res) => {
-  try {
-    const news = generateNews(30);
-    const bySymbol = {};
-
-    SYMBOLS.forEach((s) => {
-      const symbolNews = news.filter((n) => n.symbol === s);
-      const avgScore = symbolNews.length
-        ? symbolNews.reduce((sum, n) => sum + n.score, 0) / symbolNews.length
-        : 0;
-
-      bySymbol[s] = {
-        symbol: s,
-        score: parseFloat(avgScore.toFixed(3)),
-        label: avgScore > 0.1 ? 'Positive' : avgScore < -0.1 ? 'Negative' : 'Neutral',
-        newsCount: symbolNews.length,
-      };
-    });
-
-    const overall = Object.values(bySymbol).reduce((sum, s) => sum + s.score, 0) / SYMBOLS.length;
-
-    res.json({
-      success: true,
-      data: {
-        overall: parseFloat(overall.toFixed(3)),
-        overallLabel: overall > 0.1 ? 'Bullish' : overall < -0.1 ? 'Bearish' : 'Neutral',
-        bySymbol,
-        timestamp: new Date().toISOString(),
-      },
-    });
-  } catch (err) {
-    res.status(500).json({ success: false, error: 'Failed to compute sentiment' });
-  }
+router.get('/sentiment', async (_req, res, next) => {
+  try { res.json({ success: true, data: await market.sentiment() }); } catch (err) { next(err); }
 });
-
-// GET /api/analytics/daily
-router.get('/daily', async (req, res) => {
+router.get('/daily', async (_req, res, next) => {
   try {
-    const today = new Date().toISOString().slice(0, 10);
-    const summary = generateMarketSummary();
-    const news = generateNews(10);
-
-    const dailyReport = {
-      date: today,
-      generatedAt: new Date().toISOString(),
-      marketSummary: summary,
-      topHeadlines: news.slice(0, 5).map((n) => n.headline),
-      symbolAnalytics: SYMBOLS.map((s) => ({
-        symbol: s,
-        open: parseFloat((Math.random() * 50 + 150).toFixed(2)),
-        close: parseFloat((Math.random() * 50 + 150).toFixed(2)),
-        high: parseFloat((Math.random() * 60 + 160).toFixed(2)),
-        low: parseFloat((Math.random() * 40 + 140).toFixed(2)),
-        volume: Math.floor(Math.random() * 10000000) + 1000000,
-      })),
-    };
-
-    // Archive to S3 in background
-    s3Service.uploadDailyReport(dailyReport, today).catch(() => {});
-
-    res.json({ success: true, data: dailyReport });
-  } catch (err) {
-    res.status(500).json({ success: false, error: 'Failed to generate daily report' });
-  }
+    // Full-day reports are produced by Airflow; GET requests never write archives.
+    const report = market.mode === 'kafka' ? await s3.getLatestDailyReport() : null;
+    res.json({ success: true, data: report || await market.recentReport() });
+  } catch (err) { next(err); }
 });
-
+router.get('/stream', async (_req, res, next) => {
+  try {
+    res.json({ success: true, data: market.mode === 'kafka' ? await redis.getStreamAnalytics() : { movingAverages: [], activeSymbols: [], alerts: [], available: false } });
+  } catch (err) { next(err); }
+});
 module.exports = router;

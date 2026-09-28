@@ -1,3 +1,5 @@
+const { randomUUID } = require('crypto');
+
 /**
  * Fake Stock Data Generator
  * Simulates realistic market data for MVP phase
@@ -97,33 +99,25 @@ function getPriceHistory(symbol, limit = 30) {
 }
 
 function getAllLatestPrices() {
-  return SYMBOLS.map((s) => ({
-    symbol: s,
-    name: COMPANY_NAMES[s],
-    price: currentPrices[s],
+  return SYMBOLS.map((symbol) => priceHistory[symbol].at(-1) || {
+    symbol,
+    name: COMPANY_NAMES[symbol],
+    price: currentPrices[symbol],
     change: 0,
     changePct: 0,
-    volume: Math.floor(Math.random() * 5000000) + 500000,
+    volume: 0,
     timestamp: new Date().toISOString(),
-  }));
+  });
 }
 
 function getTrendingSymbols() {
-  return SYMBOLS.map((s) => ({
-    symbol: s,
-    name: COMPANY_NAMES[s],
-    price: currentPrices[s],
-    volume: Math.floor(Math.random() * 5000000) + 500000,
-    mentions: Math.floor(Math.random() * 1000) + 50,
-  }))
-    .sort((a, b) => b.mentions - a.mentions)
-    .slice(0, 5);
+  return getAllLatestPrices().sort((a, b) => b.volume - a.volume).slice(0, 5);
 }
 
-function generateNews(count = 10) {
+function generateNews(count = 10, selectedSymbol) {
   const news = [];
   for (let i = 0; i < count; i++) {
-    const symbol = SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
+    const symbol = selectedSymbol || SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)];
     const template = NEWS_TEMPLATES[Math.floor(Math.random() * NEWS_TEMPLATES.length)];
     const sentiment = SENTIMENTS[Math.floor(Math.random() * SENTIMENTS.length)];
     const score = sentiment === 'positive' ? Math.random() * 0.5 + 0.5
@@ -131,12 +125,12 @@ function generateNews(count = 10) {
         : (Math.random() - 0.5) * 0.4;
 
     news.push({
-      id: `news-${Date.now()}-${i}`,
+      id: randomUUID(),
       symbol,
       headline: template(symbol, COMPANY_NAMES[symbol]),
       sentiment,
       score: parseFloat(score.toFixed(3)),
-      source: ['Bloomberg', 'Reuters', 'WSJ', 'CNBC', 'FT'][Math.floor(Math.random() * 5)],
+      source: 'AVSA Stock Demo',
       timestamp: new Date(Date.now() - Math.random() * 3600000).toISOString(),
     });
   }
@@ -144,23 +138,7 @@ function generateNews(count = 10) {
 }
 
 function generateMarketSummary() {
-  const prices = SYMBOLS.map((s) => currentPrices[s]);
-  const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
-  const gainers = SYMBOLS.filter(() => Math.random() > 0.4).length;
-  const losers = SYMBOLS.length - gainers;
-
-  return {
-    timestamp: new Date().toISOString(),
-    totalSymbolsTracked: SYMBOLS.length,
-    gainers,
-    losers,
-    unchanged: 0,
-    averagePrice: parseFloat(avg.toFixed(2)),
-    marketSentiment: gainers > losers ? 'bullish' : 'bearish',
-    topGainer: SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)],
-    topLoser: SYMBOLS[Math.floor(Math.random() * SYMBOLS.length)],
-    totalVolume: SYMBOLS.reduce(() => Math.floor(Math.random() * 5000000) + 500000, 0),
-  };
+  return require('./lib/analytics').summarize(getAllLatestPrices());
 }
 
 module.exports = {

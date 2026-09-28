@@ -1,240 +1,105 @@
-"""
-Airflow DAG: Bloomberg Daily Financial Pipeline
-Runs once per day at market close (5:00 PM ET).
-
-Tasks:
-  1. generate_daily_report   - summarize today's data
-  2. archive_raw_data        - snapshot stock prices to S3
-  3. compute_analytics       - run aggregations on Cassandra data
-  4. cleanup_old_data        - remove stale Redis keys
-  5. send_report_to_s3       - upload final report to S3
-"""
-
-from datetime import datetime, timedelta
+"""Weekday 5 PM New York report; infrastructure failures fail and retry the task."""
+from datetime import datetime, timedelta, timezone
 import json
 import os
+import re
 
+import pendulum
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
-# Default DAG arguments
-default_args = {
-    "owner": "bloomberg-dashboard",
-    "depends_on_past": False,
-    "email_on_failure": False,
-    "email_on_retry": False,
-    "retries": 2,
-    "retry_delay": timedelta(minutes=5),
-}
+SYMBOLS = ['AAPL', 'TSLA', 'MSFT', 'GOOGL', 'AMZN', 'META', 'NVDA', 'JPM', 'GS', 'BAC']
+KEYSPACE = os.getenv('CASSANDRA_KEYSPACE', 'financial_data')
+if not re.fullmatch(r'[a-z][a-z0-9_]*', KEYSPACE):
+    raise ValueError('Invalid CASSANDRA_KEYSPACE')
 
-REDIS_HOST = os.getenv("REDIS_HOST", "localhost")
-REDIS_PORT = int(os.getenv("REDIS_PORT", 6379))
-S3_BUCKET = os.getenv("S3_BUCKET", "financial-dashboard")
-S3_ENDPOINT = os.getenv("S3_ENDPOINT", None)
-S3_ACCESS_KEY = os.getenv("S3_ACCESS_KEY", "minioadmin")
-S3_SECRET_KEY = os.getenv("S3_SECRET_KEY", "minioadmin")
-CASSANDRA_HOST = os.getenv("CASSANDRA_CONTACT_POINTS", "localhost")
-SYMBOLS = ["AAPL", "TSLA", "MSFT", "GOOGL", "AMZN", "META", "NVDA", "JPM", "GS", "BAC"]
+
+def report_date(context):
+    return context['data_interval_end'].in_timezone('America/New_York').to_date_string()
+
+
+def redis_client():
+    import redis
+    return redis.Redis(host=os.getenv('REDIS_HOST', 'redis'), port=int(os.getenv('REDIS_PORT', '6379')),
+                       password=os.getenv('REDIS_PASSWORD') or None, decode_responses=True,
+                       socket_connect_timeout=5, socket_timeout=5)
+
+
+def upload(key, value):
+    import boto3
+    client = boto3.client('s3', endpoint_url=os.getenv('S3_ENDPOINT'),
+                          region_name=os.getenv('S3_REGION', 'us-east-1'),
+                          aws_access_key_id=os.getenv('S3_ACCESS_KEY'),
+                          aws_secret_access_key=os.getenv('S3_SECRET_KEY'))
+    client.put_object(Bucket=os.getenv('S3_BUCKET', 'financial-dashboard'), Key=key,
+                      Body=json.dumps(value), ContentType='application/json')
 
 
 def generate_daily_report(**context):
-    """Aggregate daily OHLCV data and compute summary metrics."""
-    today = context["ds"]  # YYYY-MM-DD
-    print(f"[Airflow] Generating daily report for {today}")
-
-    report = {
-        "date": today,
-        "generated_at": datetime.utcnow().isoformat(),
-        "symbols": [],
-        "market_summary": {},
-    }
-
+    from cassandra.cluster import Cluster
+    day = report_date(context)
+    cluster = Cluster(os.getenv('CASSANDRA_CONTACT_POINTS', 'cassandra').split(','))
+    analytics = []
     try:
-        from cassandra.cluster import Cluster
-        cluster = Cluster([CASSANDRA_HOST])
-        session = cluster.connect("financial_data")
-
+        session = cluster.connect(KEYSPACE)
         for symbol in SYMBOLS:
-            rows = session.execute(
-                "SELECT price, volume FROM stock_prices WHERE symbol=%s AND bucket=%s LIMIT 10000",
-                (symbol, today),
-            )
-            prices = [r.price for r in rows]
-            volumes = [r.volume for r in rows]
-
-            if prices:
-                report["symbols"].append({
-                    "symbol": symbol,
-                    "open": prices[-1],
-                    "close": prices[0],
-                    "high": max(prices),
-                    "low": min(prices),
-                    "total_volume": sum(volumes),
-                    "tick_count": len(prices),
-                })
-
+            rows = session.execute('SELECT ts, price, volume FROM stock_prices WHERE symbol=%s AND bucket=%s', (symbol, day))
+            result = None
+            # Iterate all result pages, with constant memory per symbol. Cassandra returns newest first.
+            for row in rows:
+                if result is None:
+                    result = dict(symbol=symbol, open=row.price, close=row.price, high=row.price,
+                                  low=row.price, volume=0, tickCount=0)
+                result['open'] = row.price
+                result['high'] = max(result['high'], row.price)
+                result['low'] = min(result['low'], row.price)
+                result['volume'] += row.volume
+                result['tickCount'] += 1
+            if result:
+                analytics.append(result)
+    finally:
         cluster.shutdown()
-    except Exception as e:
-        print(f"[Airflow] Cassandra unavailable, using stub data: {e}")
-        import random
-        for symbol in SYMBOLS:
-            base = random.uniform(100, 900)
-            report["symbols"].append({
-                "symbol": symbol,
-                "open": round(base, 2),
-                "close": round(base * random.uniform(0.97, 1.03), 2),
-                "high": round(base * 1.04, 2),
-                "low": round(base * 0.96, 2),
-                "total_volume": random.randint(1000000, 50000000),
-                "tick_count": random.randint(500, 5000),
-            })
-
-    gainers = [s for s in report["symbols"] if s["close"] >= s["open"]]
-    losers = [s for s in report["symbols"] if s["close"] < s["open"]]
-
-    report["market_summary"] = {
-        "gainers": len(gainers),
-        "losers": len(losers),
-        "top_gainer": max(report["symbols"], key=lambda s: (s["close"] - s["open"]) / s["open"], default={}).get("symbol"),
-        "top_loser": min(report["symbols"], key=lambda s: (s["close"] - s["open"]) / s["open"], default={}).get("symbol"),
-    }
-
-    # Push to XCom for downstream tasks
-    context["ti"].xcom_push(key="daily_report", value=report)
-    print(f"[Airflow] Daily report ready: {len(report['symbols'])} symbols")
-    return report
+    if not analytics:
+        raise ValueError(f'No stored market ticks for {day}; refusing to publish a fabricated report')
+    gainers = sum(row['close'] > row['open'] for row in analytics)
+    losers = sum(row['close'] < row['open'] for row in analytics)
+    ranked = sorted(analytics, key=lambda row: (row['close'] - row['open']) / row['open'])
+    return dict(date=day, generatedAt=datetime.now(timezone.utc).isoformat(), scope='stored-day',
+                source='kafka', simulated=True, topHeadlines=[], symbolAnalytics=analytics,
+                marketSummary=dict(gainers=gainers, losers=losers, unchanged=len(analytics)-gainers-losers,
+                                   totalSymbolsTracked=len(analytics), topGainer=ranked[-1]['symbol'],
+                                   topLoser=ranked[0]['symbol'], totalVolume=sum(row['volume'] for row in analytics),
+                                   marketSentiment='bullish' if gainers > losers else 'bearish' if losers > gainers else 'neutral'))
 
 
 def archive_raw_data(**context):
-    """Save a raw snapshot of latest prices to S3."""
-    import boto3
-    from botocore.client import Config
-
-    today = context["ds"]
-    print(f"[Airflow] Archiving raw data for {today}")
-
-    # Attempt to pull from Redis
-    prices = []
-    try:
-        import redis as redis_lib
-        r = redis_lib.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-        raw = r.get("prices:all")
-        if raw:
-            prices = json.loads(raw)
-    except Exception as e:
-        print(f"[Airflow] Redis unavailable: {e}")
-
-    if not prices:
-        import random
-        prices = [{"symbol": s, "price": round(random.uniform(100, 900), 2)} for s in SYMBOLS]
-
-    try:
-        s3_kwargs = {
-            "region_name": "us-east-1",
-            "aws_access_key_id": S3_ACCESS_KEY,
-            "aws_secret_access_key": S3_SECRET_KEY,
-        }
-        if S3_ENDPOINT:
-            s3_kwargs["endpoint_url"] = S3_ENDPOINT
-            s3_kwargs["config"] = Config(signature_version="s3v4")
-
-        s3 = boto3.client("s3", **s3_kwargs)
-        key = f"raw-data/{today}/prices-{datetime.utcnow().strftime('%H%M%S')}.json"
-        s3.put_object(
-            Bucket=S3_BUCKET,
-            Key=key,
-            Body=json.dumps(prices, indent=2),
-            ContentType="application/json",
-        )
-        print(f"[Airflow] Archived to s3://{S3_BUCKET}/{key}")
-    except Exception as e:
-        print(f"[Airflow] S3 upload failed (non-fatal): {e}")
+    with redis_client() as client:
+        raw = client.get('prices:all')
+    if not raw:
+        raise ValueError('No recent prices to archive')
+    upload(f'raw-data/{report_date(context)}/snapshot.json', json.loads(raw))
 
 
 def cleanup_old_redis_keys(**context):
-    """Remove stale or expired keys from Redis."""
-    print("[Airflow] Cleaning up Redis keys")
-    try:
-        import redis as redis_lib
-        r = redis_lib.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=True)
-
-        # Trim alert queues
-        r.ltrim("alerts:price_spike", 0, 99)
-
-        # Delete old mention counters (they reset hourly, but clean up stragglers)
-        for symbol in SYMBOLS:
-            r.delete(f"mentions:{symbol}")
-
-        print("[Airflow] Redis cleanup complete")
-    except Exception as e:
-        print(f"[Airflow] Redis cleanup failed (non-fatal): {e}")
+    with redis_client() as client:
+        client.ltrim('alerts:price_spike', 0, 49)
 
 
 def send_report_to_s3(**context):
-    """Upload the generated daily report to S3."""
-    import boto3
-    from botocore.client import Config
-
-    today = context["ds"]
-    report = context["ti"].xcom_pull(key="daily_report", task_ids="generate_daily_report")
-
+    report = context['ti'].xcom_pull(task_ids='generate_daily_report')
     if not report:
-        print("[Airflow] No report found in XCom, skipping S3 upload")
-        return
-
-    try:
-        s3_kwargs = {
-            "region_name": "us-east-1",
-            "aws_access_key_id": S3_ACCESS_KEY,
-            "aws_secret_access_key": S3_SECRET_KEY,
-        }
-        if S3_ENDPOINT:
-            s3_kwargs["endpoint_url"] = S3_ENDPOINT
-            s3_kwargs["config"] = Config(signature_version="s3v4")
-
-        s3 = boto3.client("s3", **s3_kwargs)
-        key = f"daily-reports/{today}/report.json"
-        s3.put_object(
-            Bucket=S3_BUCKET,
-            Key=key,
-            Body=json.dumps(report, indent=2),
-            ContentType="application/json",
-        )
-        print(f"[Airflow] Daily report uploaded to s3://{S3_BUCKET}/{key}")
-    except Exception as e:
-        print(f"[Airflow] S3 report upload failed (non-fatal): {e}")
+        raise ValueError('Daily report is missing')
+    upload(f"daily-reports/{report['date']}/report.json", report)
+    upload('daily-reports/latest.json', report)
 
 
-# Define DAG
-with DAG(
-    dag_id="bloomberg_daily_pipeline",
-    default_args=default_args,
-    description="Daily financial data pipeline: report, archive, cleanup",
-    schedule_interval="0 22 * * 1-5",  # 5 PM ET (22:00 UTC), weekdays only
-    start_date=datetime(2026, 1, 1),
-    catchup=False,
-    tags=["bloomberg", "finance", "pipeline"],
-) as dag:
-
-    t1_generate = PythonOperator(
-        task_id="generate_daily_report",
-        python_callable=generate_daily_report,
-    )
-
-    t2_archive = PythonOperator(
-        task_id="archive_raw_data",
-        python_callable=archive_raw_data,
-    )
-
-    t3_cleanup = PythonOperator(
-        task_id="cleanup_old_redis_keys",
-        python_callable=cleanup_old_redis_keys,
-    )
-
-    t4_upload = PythonOperator(
-        task_id="send_report_to_s3",
-        python_callable=send_report_to_s3,
-    )
-
-    # Task dependencies
-    t1_generate >> [t2_archive, t3_cleanup] >> t4_upload
+with DAG('avsa_stock_daily_pipeline',
+         default_args={'owner': 'avsa-stock', 'retries': 2, 'retry_delay': timedelta(minutes=5)},
+         schedule_interval='0 17 * * 1-5',
+         start_date=pendulum.datetime(2026, 1, 1, tz='America/New_York'), catchup=False,
+         max_active_runs=1, tags=['avsa-stock']) as dag:
+    report = PythonOperator(task_id='generate_daily_report', python_callable=generate_daily_report)
+    archive = PythonOperator(task_id='archive_raw_data', python_callable=archive_raw_data)
+    cleanup = PythonOperator(task_id='cleanup_old_redis_keys', python_callable=cleanup_old_redis_keys)
+    publish = PythonOperator(task_id='send_report_to_s3', python_callable=send_report_to_s3)
+    report >> [archive, cleanup] >> publish

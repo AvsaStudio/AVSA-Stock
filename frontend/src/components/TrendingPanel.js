@@ -1,38 +1,23 @@
-import React, { useState, useEffect } from 'react';
-
-const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:4000';
+import React from 'react';
+import { useResource } from '../hooks/useResource';
 
 export default function TrendingPanel({ onSelectSymbol }) {
-  const [trending, setTrending] = useState([]);
-  const [sentiment, setSentiment] = useState(null);
-
-  useEffect(() => {
-    const fetchAll = async () => {
-      try {
-        const [trendRes, sentRes] = await Promise.all([
-          fetch(`${API_URL}/api/stocks/trending`),
-          fetch(`${API_URL}/api/analytics/sentiment`),
-        ]);
-        const [td, sd] = await Promise.all([trendRes.json(), sentRes.json()]);
-        if (td.success) setTrending(td.data);
-        if (sd.success) setSentiment(sd.data);
-      } catch {}
-    };
-
-    fetchAll();
-    const iv = setInterval(fetchAll, 15000);
-    return () => clearInterval(iv);
-  }, []);
+  const trends = useResource('/api/stocks/trending', 15000);
+  const sentiments = useResource('/api/analytics/sentiment', 15000);
+  const trending = trends.data || [];
+  const sentiment = sentiments.data;
 
   return (
     <div style={styles.container}>
+      {trends.error && <div className="panel-error" role="alert">{trends.error} <button onClick={trends.retry}>Retry</button></div>}
+      {sentiments.error && <div className="panel-error" role="alert">Sentiment unavailable. <button onClick={sentiments.retry}>Retry</button></div>}
       {/* Trending Symbols */}
       <div style={styles.section}>
         <div style={styles.sectionHeader}>
           <span style={styles.title}>TRENDING</span>
         </div>
         {trending.map((t, i) => (
-          <div
+          <button className="trending-button"
             key={t.symbol}
             style={styles.trendRow}
             onClick={() => onSelectSymbol(t.symbol)}
@@ -46,12 +31,12 @@ export default function TrendingPanel({ onSelectSymbol }) {
               <span style={styles.trendPrice}>${t.price?.toFixed(2)}</span>
               <span style={styles.trendVol}>{(t.volume / 1e6).toFixed(1)}M vol</span>
             </div>
-          </div>
+          </button>
         ))}
       </div>
 
       {/* Sentiment Overview */}
-      {sentiment && (
+      {sentiment && sentiment.available !== false && (
         <div style={styles.section}>
           <div style={styles.sectionHeader}>
             <span style={styles.title}>MARKET SENTIMENT</span>

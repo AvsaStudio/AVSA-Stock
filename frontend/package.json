@@ -1,9 +1,9 @@
 {
-  "name": "bloomberg-dashboard-frontend",
+  "name": "avsa-stock-frontend",
   "version": "1.0.0",
   "private": true,
   "engines": {
-    "node": "20.x"
+    "node": "22.x"
   },
   "dependencies": {
     "react": "^18.2.0",
@@ -18,7 +18,15 @@
   },
   "proxy": "http://localhost:4000",
   "browserslist": {
-    "production": [">0.2%", "not dead", "not op_mini all"],
-    "development": ["last 1 chrome version", "last 1 firefox version", "last 1 safari version"]
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
   }
 }

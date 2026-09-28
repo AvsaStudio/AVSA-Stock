@@ -7,19 +7,23 @@ import PriceChart from './components/PriceChart';
 import NewsFeed from './components/NewsFeed';
 import TrendingPanel from './components/TrendingPanel';
 import AnalyticsPanel from './components/AnalyticsPanel';
+import StreamPanel from './components/StreamPanel';
+import './styles.css';
 
 export default function App() {
-  const { prices, news, summary, connected, lastUpdate } = useWebSocket();
+  const { prices, news, summary, connected, lastUpdate, error, source, simulated, newsError } = useWebSocket();
   const [selectedSymbol, setSelectedSymbol] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard'); // dashboard | analytics
 
   return (
     <div style={styles.app}>
-      <Header connected={connected} lastUpdate={lastUpdate} summary={summary} />
+      <Header connected={connected} lastUpdate={lastUpdate} summary={summary} source={source} simulated={simulated} error={error} dataAsOf={prices.length ? new Date(Math.max(...prices.map((p) => Date.parse(p.timestamp)))) : null} />
+      {error && <div className="feed-notice" role="alert">{error} {prices.length > 0 && 'Showing the last received prices.'}</div>}
+      {!lastUpdate && !error && <div className="feed-notice" role="status">Connecting to market data…</div>}
       <StockTicker prices={prices} />
 
       {/* Tab bar */}
-      <div style={styles.tabBar}>
+      <div className="tab-bar" style={styles.tabBar}>
         <Tab label="DASHBOARD" active={activeTab === 'dashboard'} onClick={() => setActiveTab('dashboard')} />
         <Tab label="ANALYTICS" active={activeTab === 'analytics'} onClick={() => setActiveTab('analytics')} />
         <div style={styles.tabSpacer} />
@@ -31,7 +35,7 @@ export default function App() {
       </div>
 
       {activeTab === 'dashboard' && (
-        <div style={styles.grid}>
+        <div className="dashboard-grid" style={styles.grid}>
           {/* Left column: stock table */}
           <div style={styles.colLeft}>
             <StockGrid
@@ -44,7 +48,7 @@ export default function App() {
           {/* Center column: chart + news */}
           <div style={styles.colCenter}>
             <PriceChart symbol={selectedSymbol} prices={prices} />
-            <NewsFeed news={news} />
+            <NewsFeed news={news} error={newsError} />
           </div>
 
           {/* Right column: trending + sentiment */}
@@ -57,11 +61,12 @@ export default function App() {
       {activeTab === 'analytics' && (
         <div style={styles.analyticsView}>
           <AnalyticsPanel />
+          {source === 'kafka' && <StreamPanel />}
         </div>
       )}
 
       <footer style={styles.footer}>
-        <span>Bloomberg Financial Data Pipeline Dashboard &nbsp;|&nbsp; React · Node.js · Kafka · Redis · Cassandra · Spark · Airflow · S3</span>
+        <span>AVSA Stock &nbsp;|&nbsp; {simulated === false ? 'Alpaca IEX · Single-exchange coverage · Refreshes every 15 seconds' : 'Simulated market data'}</span>
       </footer>
     </div>
   );
@@ -122,7 +127,7 @@ const styles = {
   },
   grid: {
     display: 'grid',
-    gridTemplateColumns: '380px 1fr 260px',
+
     gap: 12,
     padding: 12,
     flex: 1,

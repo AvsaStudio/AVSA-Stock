@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React from 'react';
 
 export default function StockGrid({ prices, onSelectSymbol, selectedSymbol }) {
   return (
@@ -7,7 +7,7 @@ export default function StockGrid({ prices, onSelectSymbol, selectedSymbol }) {
         <span style={styles.title}>EQUITIES</span>
         <span style={styles.count}>{prices.length} symbols</span>
       </div>
-      <table style={styles.table}>
+      <div className="table-scroll"><table style={styles.table}>
         <thead>
           <tr style={styles.thead}>
             {['Symbol', 'Name', 'Price', 'Change', 'Chg %', 'Volume'].map((h) => (
@@ -25,7 +25,7 @@ export default function StockGrid({ prices, onSelectSymbol, selectedSymbol }) {
             />
           ))}
         </tbody>
-      </table>
+      </table></div>
     </div>
   );
 }
@@ -45,7 +45,7 @@ function StockRow({ price, selected, onClick }) {
       onClick={onClick}
     >
       <td style={styles.td}>
-        <span style={styles.symbolBadge}>{price.symbol}</span>
+        <button className="symbol-button" aria-pressed={selected} onClick={(event) => { event.stopPropagation(); onClick(); }} style={styles.symbolBadge}>{price.symbol}</button>
       </td>
       <td style={{ ...styles.td, color: '#8b9ab0', fontSize: 11 }}>
         {price.name?.split(' ').slice(0, 2).join(' ')}

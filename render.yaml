@@ -10,7 +10,7 @@ services:
       - key: NODE_ENV
         value: production
       - key: NODE_VERSION
-        value: 20
+        value: 22
 
   - type: static
     name: avsa-stock-dashboard
@@ -19,8 +19,6 @@ services:
     staticPublishPath: build
     envVars:
       - key: NODE_VERSION
-        value: 20
+        value: 22
       - key: REACT_APP_API_URL
-        sync: false
-      - key: REACT_APP_WS_URL
         sync: false

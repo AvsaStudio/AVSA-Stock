@@ -7,17 +7,28 @@ const cassandra = require('cassandra-driver');
 
 let client = null;
 let initialized = false;
-
-// In-memory fallback
-const memStore = new Map();
+let connectionPromise = null;
+let retryAfter = 0;
+const keyspace = process.env.CASSANDRA_KEYSPACE || 'financial_data';
+if (!/^[a-z][a-z0-9_]*$/.test(keyspace)) throw new Error('Invalid CASSANDRA_KEYSPACE');
+const unavailable = () => Object.assign(new Error('Cassandra is unavailable'), { status: 503 });
 
 async function getClient() {
+  if (!process.env.CASSANDRA_CONTACT_POINTS) return null;
   if (client && initialized) return client;
 
+  if (connectionPromise) return connectionPromise;
+  if (Date.now() < retryAfter) return null;
+  connectionPromise = connect().finally(() => { connectionPromise = null; });
+  return connectionPromise;
+}
+
+async function connect() {
   try {
     client = new cassandra.Client({
-      contactPoints: [(process.env.CASSANDRA_CONTACT_POINTS || 'localhost')],
-      localDataCenter: 'datacenter1',
+      contactPoints: process.env.CASSANDRA_CONTACT_POINTS.split(',').map((host) => host.trim()),
+      localDataCenter: process.env.CASSANDRA_DATACENTER || 'datacenter1',
+      socketOptions: { connectTimeout: 1500, readTimeout: 3000 },
       credentials: {
         username: process.env.CASSANDRA_USERNAME || 'cassandra',
         password: process.env.CASSANDRA_PASSWORD || 'cassandra',
@@ -28,15 +39,13 @@ async function getClient() {
 
     // Create keyspace if not exists
     await client.execute(`
-      CREATE KEYSPACE IF NOT EXISTS ${process.env.CASSANDRA_KEYSPACE || 'financial_data'}
+      CREATE KEYSPACE IF NOT EXISTS ${keyspace}
       WITH replication = {'class': 'SimpleStrategy', 'replication_factor': 1}
     `);
 
-    await client.execute(`USE ${process.env.CASSANDRA_KEYSPACE || 'financial_data'}`);
-
     // Create stock_prices table optimized for time-series queries
     await client.execute(`
-      CREATE TABLE IF NOT EXISTS stock_prices (
+      CREATE TABLE IF NOT EXISTS ${keyspace}.stock_prices (
         symbol     TEXT,
         bucket     TEXT,
         ts         TIMESTAMP,
@@ -49,51 +58,32 @@ async function getClient() {
         AND default_time_to_live = 2592000
     `);
 
-    // Daily analytics table
-    await client.execute(`
-      CREATE TABLE IF NOT EXISTS daily_analytics (
-        date        TEXT,
-        symbol      TEXT,
-        open_price  DOUBLE,
-        close_price DOUBLE,
-        high_price  DOUBLE,
-        low_price   DOUBLE,
-        total_volume BIGINT,
-        avg_sentiment DOUBLE,
-        PRIMARY KEY (date, symbol)
-      )
-    `);
-
     initialized = true;
     console.log('[Cassandra] Connected and schema ready');
     return client;
   } catch (err) {
-    console.warn('[Cassandra] Could not connect, using in-memory fallback:', err.message);
+    console.warn('[Cassandra] Could not connect, service unavailable:', err.message);
+    retryAfter = Date.now() + 10000;
+    await client?.shutdown().catch(() => {});
     client = null;
+    initialized = false;
     return null;
   }
 }
 
 function getDayBucket(ts = new Date()) {
-  return ts.toISOString().slice(0, 10); // YYYY-MM-DD
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/New_York', year: 'numeric', month: '2-digit', day: '2-digit' }).format(ts);
 }
 
-async function savePriceTick(tick) {
-  const bucket = getDayBucket();
-  const key = `${tick.symbol}:${bucket}`;
-
-  // In-memory store (always works as fallback)
-  if (!memStore.has(key)) memStore.set(key, []);
-  const arr = memStore.get(key);
-  arr.push(tick);
-  if (arr.length > 500) arr.shift();
+async function savePriceTick(tick, { required = false } = {}) {
+  const bucket = getDayBucket(new Date(tick.timestamp));
 
   try {
     const c = await getClient();
-    if (!c) return;
+    if (!c) { if (required) throw unavailable(); return; }
 
     await c.execute(
-      `INSERT INTO financial_data.stock_prices
+      `INSERT INTO ${keyspace}.stock_prices
        (symbol, bucket, ts, price, change, change_pct, volume)
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [tick.symbol, bucket, new Date(tick.timestamp), tick.price,
@@ -102,19 +92,20 @@ async function savePriceTick(tick) {
     );
   } catch (err) {
     console.warn('[Cassandra] Write error:', err.message);
+    if (required) throw unavailable();
   }
 }
 
-async function getPriceHistory(symbol, limit = 50) {
+async function getPriceHistory(symbol, limit = 50, { required = false } = {}) {
   const bucket = getDayBucket();
-  const key = `${symbol}:${bucket}`;
 
   try {
     const c = await getClient();
+    if (!c && required) throw unavailable();
     if (c) {
       const result = await c.execute(
         `SELECT ts, price, change, change_pct, volume
-         FROM financial_data.stock_prices
+         FROM ${keyspace}.stock_prices
          WHERE symbol = ? AND bucket = ?
          LIMIT ?`,
         [symbol, bucket, limit],
@@ -126,41 +117,22 @@ async function getPriceHistory(symbol, limit = 50) {
         price: r.price,
         change: r.change,
         changePct: r.change_pct,
-        volume: r.volume,
-      }));
+        volume: Number(r.volume),
+      })).reverse();
     }
   } catch (err) {
     console.warn('[Cassandra] Read error:', err.message);
+    if (required) throw unavailable();
   }
 
-  // Fallback to memory
-  const mem = memStore.get(key) || [];
-  return mem.slice(-limit);
+  return [];
 }
 
-async function saveDailyAnalytics(analytics) {
-  const date = getDayBucket();
-
-  try {
-    const c = await getClient();
-    if (!c) return;
-
-    for (const row of analytics) {
-      await c.execute(
-        `INSERT INTO financial_data.daily_analytics
-         (date, symbol, open_price, close_price, high_price, low_price, total_volume, avg_sentiment)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [date, row.symbol, row.open, row.close, row.high, row.low, row.volume, row.sentiment],
-        { prepare: true },
-      );
-    }
-  } catch (err) {
-    console.warn('[Cassandra] Analytics write error:', err.message);
-  }
+async function close() {
+  if (connectionPromise) await connectionPromise;
+  await client?.shutdown();
+  client = null;
+  initialized = false;
 }
-
-module.exports = {
-  savePriceTick,
-  getPriceHistory,
-  saveDailyAnalytics,
-};
+function status() { return !process.env.CASSANDRA_CONTACT_POINTS ? 'disabled' : initialized ? 'connected' : 'disconnected'; }
+module.exports = { savePriceTick, getPriceHistory, close, status };

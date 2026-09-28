@@ -1,166 +1,79 @@
-#  Financial Data Pipeline Dashboard
+# AVSA Stock
 
-Real-time financial analytics dashboard demonstrating a full data engineering stack: React frontend, Node.js API, Kafka streaming, Redis caching, Cassandra time-series storage, Spark stream processing, Airflow scheduling, and S3 archival.
+A stock dashboard with a working simulated demo, an optional Alpaca IEX adapter, and a separate Kafka/Redis/Cassandra/Spark/Airflow learning pipeline.
 
----
+## Run locally
 
-## Architecture
+Use Node 22 and npm.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                        React Dashboard                           │
-│  Stock Table │ Price Chart │ News Feed │ Trending │ Analytics   │
-└──────────────────────────┬──────────────────────────────────────┘
-                           │ REST + WebSocket
-┌──────────────────────────▼──────────────────────────────────────┐
-│                    Node.js / Express API                         │
-│          /api/stocks  /api/news  /api/analytics                 │
-└───┬──────────────┬───────────────┬───────────────┬─────────────┘
-    │              │               │               │
-    ▼              ▼               ▼               ▼
-┌───────┐    ┌─────────┐    ┌──────────┐    ┌──────────┐
-│ Redis │    │Cassandra│    │  Kafka   │    │  S3/MinIO│
-│ Cache │    │Time-ser.│    │ Streams  │    │ Archival │
-└───────┘    └─────────┘    └────┬─────┘    └──────────┘
-                                 │
-                    ┌────────────┴────────────┐
-                    │                         │
-               ┌────▼────┐              ┌─────▼────┐
-               │Producer │              │ Consumer │
-               │(ticks)  │              │→Redis    │
-               └─────────┘              │→Cassandra│
-                                        └──────────┘
-                                             │
-                                        ┌────▼─────┐
-                                        │  Spark   │
-                                        │Streaming │
-                                        │(moving   │
-                                        │averages, │
-                                        │ spikes)  │
-                                        └──────────┘
-
-┌────────────────────────────────────┐
-│  Airflow (runs daily @ 5PM ET)     │
-│  1. Generate daily report          │
-│  2. Archive raw data → S3          │
-│  3. Clean up Redis keys            │
-│  4. Upload report → S3             │
-└────────────────────────────────────┘
-```
-
----
-
-## Quick Start
-
-### Phase 1: MVP (no Docker needed)
 ```bash
-cd bloomberg-dashboard
 ./start.sh
 ```
 
-### Phase 2+: Full Stack with Docker
-```bash
-# Start infrastructure (Kafka, Redis, Cassandra, MinIO, Airflow)
-./start.sh --infra
+Open `http://localhost:3000`. The backend defaults to port 4000. The script installs missing dependencies and creates an ignored `backend/.env` if needed. Demo mode requires no external services.
 
-# Start everything including Kafka streaming + Spark
+## Real market data
+
+Follow [the Alpaca setup guide](docs/MARKET_DATA_SETUP.md). Create an account, add backend-only credentials to `backend/.env`, set `DATA_MODE=alpaca`, and run `npm --prefix backend run check:provider`. IEX covers one exchange; the UI labels the source and refresh interval. The app does not place trades.
+
+## Simulated engineering pipeline
+
+With Docker running:
+
+```bash
 ./start.sh --all
 ```
 
----
+This starts infrastructure, the Kafka generator/consumer, the app in Kafka mode, and Spark. Airflow has separate initialization, scheduler and webserver services. First-time image builds can take several minutes. `--infra` starts infrastructure and the app without switching the selected data mode. Ctrl+C stops the app processes; Docker services remain running.
 
-## Project Structure
-
-```
-bloomberg-dashboard/
-├── backend/
-│   ├── server.js              # Express + WebSocket server
-│   ├── dataGenerator.js       # Fake stock/news data
-│   ├── routes/
-│   │   ├── stocks.js          # /api/stocks
-│   │   ├── news.js            # /api/news
-│   │   └── analytics.js       # /api/analytics
-│   ├── kafka/
-│   │   ├── producer.js        # Publishes price ticks to Kafka
-│   │   └── consumer.js        # Reads from Kafka → Redis + Cassandra
-│   └── services/
-│       ├── redisService.js    # Fast cache layer
-│       ├── cassandraService.js# Time-series persistence
-│       └── s3Service.js       # Raw data + report archival
-│
-├── frontend/
-│   └── src/
-│       ├── App.js             # Root layout + tab routing
-│       ├── hooks/
-│       │   └── useWebSocket.js# Real-time WS hook w/ REST fallback
-│       └── components/
-│           ├── Header.js      # Status bar + market pills
-│           ├── StockTicker.js # Auto-scrolling price ticker
-│           ├── StockGrid.js   # Sortable equities table
-│           ├── PriceChart.js  # Recharts intraday area chart
-│           ├── NewsFeed.js    # Live news + sentiment scores
-│           ├── TrendingPanel.js # Trending symbols + sentiment bars
-│           └── AnalyticsPanel.js # Daily report + bar chart
-│
-├── spark/
-│   └── streaming_processor.py # PySpark: moving averages + spike alerts
-│
-├── airflow/
-│   └── dags/
-│       └── daily_pipeline.py  # Airflow DAG (5 tasks, runs at market close)
-│
-├── docker/
-│   └── docker-compose.yml    # Full infra: Kafka, Redis, Cassandra, MinIO, Airflow
-│
-└── start.sh                   # One-command startup script
+```bash
+docker compose -f docker/docker-compose.yml --profile streaming down
 ```
 
----
+This stops containers without deleting stored volumes.
 
-## API Endpoints
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/api/stocks/latest` | All current prices |
-| GET | `/api/stocks/trending` | Top 5 by volume |
-| GET | `/api/stocks/:symbol` | Single symbol |
-| GET | `/api/stocks/:symbol/history` | Price history |
-| GET | `/api/news` | Latest financial news |
-| GET | `/api/news/:symbol` | News by symbol |
-| GET | `/api/analytics/summary` | Market summary |
-| GET | `/api/analytics/sentiment` | Sentiment by symbol |
-| GET | `/api/analytics/daily` | Daily report |
-| WS  | `ws://localhost:4000/ws` | Real-time updates |
-
----
-
-## Infrastructure Services
-
-| Service | URL | Credentials |
-|---------|-----|-------------|
+| Service | Local URL | Development login |
+| --- | --- | --- |
 | Kafka UI | http://localhost:8080 | — |
-| Redis Commander | http://localhost:8081 | — |
+| Redis UI | http://localhost:8081 | — |
 | Airflow | http://localhost:8082 | admin / admin |
-| MinIO Console | http://localhost:9001 | minioadmin / minioadmin |
+| MinIO | http://localhost:9001 | minioadmin / minioadmin |
 
----
+These are local development configurations. Live Alpaca mode connects directly from the backend and does not send provider data through the simulated pipeline.
 
-## Tech Stack
+## API
 
-| Layer | Technology |
-|-------|------------|
-| Frontend | React 18, Recharts, WebSocket |
-| Backend | Node.js, Express, WebSocket (ws) |
-| Streaming | Apache Kafka (KafkaJS) |
-| Cache | Redis 7 |
-| Database | Apache Cassandra 4 |
-| Processing | Apache Spark (PySpark Structured Streaming) |
-| Scheduling | Apache Airflow 2 |
-| Storage | AWS S3 / MinIO |
-| Infra | Docker Compose |
+| Endpoint | Purpose |
+| --- | --- |
+| `/health` | API liveness and configured service state |
+| `/api/snapshot` | Consistent prices, headlines, summary and source |
+| `/api/stocks/latest` | Latest prices |
+| `/api/stocks/trending` | Top five by reported volume |
+| `/api/stocks/:symbol` | Current symbol price |
+| `/api/stocks/:symbol/history?limit=50` | Chronological history, capped at 200 |
+| `/api/news` and `/api/news/:symbol` | Headlines |
+| `/api/analytics/summary` | Market summary |
+| `/api/analytics/sentiment` | Demo sentiment; unavailable for unrated live news |
+| `/api/analytics/daily` | Stored-day, latest-session, or recent-window report (scope included) |
+| `/api/analytics/stream` | Finalized Spark averages, activity and alerts |
+| `/ws` | Snapshot updates and feed errors over WebSocket |
 
----
+## Project layout
 
-## Resume Bullet
+- `backend/`: API, provider adapter, market service, Kafka workers and regression tests.
+- `frontend/`: React dashboard, shared connection/request hooks, responsive styles and tests.
+- `docker/`: local infrastructure configuration.
+- `airflow/`: custom image and weekday 5 PM New York reporting DAG.
+- `spark/`: custom image and streaming processor with persistent checkpoints.
+- `docs/`: [verification status](docs/REVIEW.md) and [provider setup](docs/MARKET_DATA_SETUP.md).
 
-> Built a real-time financial data pipeline and analytics dashboard using React, Node.js, Kafka, Redis, Cassandra, Spark, Airflow, and AWS S3-compatible storage to stream, process, cache, store, and visualize high-volume market data.
+## Checks
+
+```bash
+npm --prefix backend test
+CI=true npm --prefix frontend test -- --watchAll=false --runInBand
+CI=true npm --prefix frontend run build
+docker compose -f docker/docker-compose.yml --profile streaming config --quiet
+```
+
+For a local production-build preview, build the frontend and run `SERVE_FRONTEND=true npm --prefix backend start`, then visit `http://localhost:4000`.

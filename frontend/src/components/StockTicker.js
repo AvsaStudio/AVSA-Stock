@@ -19,7 +19,7 @@ export default function StockTicker({ prices }) {
     };
     frame = requestAnimationFrame(animate);
     return () => cancelAnimationFrame(frame);
-  }, [prices]);
+  }, []);
 
   const items = [...prices, ...prices]; // duplicate for seamless loop
 

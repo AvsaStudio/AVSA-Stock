@@ -1,6 +1,4 @@
-version: "3.8"
-
-# Bloomberg Financial Dashboard - Infrastructure Stack
+# AVSA Stock - Infrastructure Stack
 # Includes: Kafka, Zookeeper, Redis, Cassandra, MinIO (S3), Airflow
 
 services:
@@ -8,7 +6,7 @@ services:
   # ── Kafka / Zookeeper ────────────────────────────────────────────────────
   zookeeper:
     image: confluentinc/cp-zookeeper:7.5.0
-    container_name: bloomberg-zookeeper
+    container_name: avsa-stock-zookeeper
     environment:
       ZOOKEEPER_CLIENT_PORT: 2181
       ZOOKEEPER_TICK_TIME: 2000
@@ -20,7 +18,7 @@ services:
 
   kafka:
     image: confluentinc/cp-kafka:7.5.0
-    container_name: bloomberg-kafka
+    container_name: avsa-stock-kafka
     depends_on:
       - zookeeper
     ports:
@@ -28,37 +26,50 @@ services:
     environment:
       KAFKA_BROKER_ID: 1
       KAFKA_ZOOKEEPER_CONNECT: zookeeper:2181
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+      KAFKA_LISTENERS: INTERNAL://0.0.0.0:29092,EXTERNAL://0.0.0.0:9092
+      KAFKA_ADVERTISED_LISTENERS: INTERNAL://kafka:29092,EXTERNAL://localhost:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
       KAFKA_LOG_RETENTION_HOURS: 24
     volumes:
       - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD", "kafka-topics", "--bootstrap-server", "localhost:29092", "--list"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
 
   kafka-ui:
     image: provectuslabs/kafka-ui:latest
-    container_name: bloomberg-kafka-ui
+    container_name: avsa-stock-kafka-ui
     depends_on:
       - kafka
     ports:
       - "8080:8080"
     environment:
-      KAFKA_CLUSTERS_0_NAME: bloomberg
-      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_NAME: avsa-stock
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
 
   # ── Redis ─────────────────────────────────────────────────────────────────
   redis:
     image: redis:7.2-alpine
-    container_name: bloomberg-redis
+    container_name: avsa-stock-redis
     ports:
       - "6379:6379"
     command: redis-server --maxmemory 256mb --maxmemory-policy allkeys-lru
     volumes:
       - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
 
   redis-commander:
     image: rediscommander/redis-commander:latest
-    container_name: bloomberg-redis-ui
+    container_name: avsa-stock-redis-ui
     depends_on:
       - redis
     ports:
@@ -69,11 +80,11 @@ services:
   # ── Cassandra ─────────────────────────────────────────────────────────────
   cassandra:
     image: cassandra:4.1
-    container_name: bloomberg-cassandra
+    container_name: avsa-stock-cassandra
     ports:
       - "9042:9042"
     environment:
-      CASSANDRA_CLUSTER_NAME: bloomberg-cluster
+      CASSANDRA_CLUSTER_NAME: avsa-stock-cluster
       CASSANDRA_DC: datacenter1
       HEAP_NEWSIZE: 128M
       MAX_HEAP_SIZE: 512M
@@ -88,7 +99,7 @@ services:
   # ── MinIO (S3-compatible) ─────────────────────────────────────────────────
   minio:
     image: minio/minio:latest
-    container_name: bloomberg-minio
+    container_name: avsa-stock-minio
     ports:
       - "9000:9000"
       - "9001:9001"
@@ -107,63 +118,105 @@ services:
   # MinIO bucket initialization
   minio-init:
     image: minio/mc:latest
-    container_name: bloomberg-minio-init
+    container_name: avsa-stock-minio-init
     depends_on:
       minio:
         condition: service_healthy
     entrypoint: >
       /bin/sh -c "
-        mc alias set local http://minio:9000 minioadmin minioadmin;
-        mc mb local/financial-dashboard --ignore-existing;
-        mc mb local/financial-dashboard/raw-data --ignore-existing;
-        mc mb local/financial-dashboard/daily-reports --ignore-existing;
-        mc mb local/financial-dashboard/logs --ignore-existing;
+        mc alias set local http://minio:9000 minioadmin minioadmin &&
+        mc mb local/financial-dashboard --ignore-existing &&
         echo 'MinIO buckets ready';
       "
 
   # ── Airflow ───────────────────────────────────────────────────────────────
   airflow-db:
     image: postgres:15-alpine
-    container_name: bloomberg-airflow-db
+    container_name: avsa-stock-airflow-db
     environment:
       POSTGRES_USER: airflow
       POSTGRES_PASSWORD: airflow
       POSTGRES_DB: airflow
     volumes:
       - airflow-db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U airflow"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
 
-  airflow:
-    image: apache/airflow:2.8.0
-    container_name: bloomberg-airflow
+  airflow-init:
+    build: ../airflow
+    image: avsa-stock-airflow:local
     depends_on:
-      - airflow-db
-    ports:
-      - "8082:8080"
-    environment:
+      airflow-db:
+        condition: service_healthy
+    environment: &airflow-env
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@airflow-db/airflow
-      AIRFLOW__CORE__FERNET_KEY: "zTMJFNabcXJMp1A3m6Vfz4Eox-c5Ek87k5_i7fwcWU="
-      AIRFLOW__WEBSERVER__SECRET_KEY: "bloomberg-secret"
       AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__WEBSERVER__SECRET_KEY: "avsa-stock-local-development"
       REDIS_HOST: redis
-      KAFKA_BROKERS: kafka:9092
       CASSANDRA_CONTACT_POINTS: cassandra
       S3_ENDPOINT: http://minio:9000
       S3_ACCESS_KEY: minioadmin
       S3_SECRET_KEY: minioadmin
       S3_BUCKET: financial-dashboard
-    volumes:
-      - ../airflow/dags:/opt/airflow/dags
+      _AIRFLOW_DB_MIGRATE: "true"
+      _AIRFLOW_WWW_USER_CREATE: "true"
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+    command: version
+
+  airflow-scheduler:
+    image: avsa-stock-airflow:local
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+      cassandra:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_DB_MIGRATE: ""
+      _AIRFLOW_WWW_USER_CREATE: ""
+    volumes: &airflow-volumes
+      - ../airflow/dags:/opt/airflow/dags:ro
       - airflow-logs:/opt/airflow/logs
-    command: >
-      bash -c "
-        airflow db init &&
-        airflow users create --username admin --password admin \
-          --firstname Bloomberg --lastname Admin \
-          --role Admin --email admin@bloomberg.local &&
-        airflow scheduler &
-        airflow webserver
-      "
+    command: scheduler
+    restart: unless-stopped
+
+  airflow:
+    image: avsa-stock-airflow:local
+    depends_on:
+      airflow-init:
+        condition: service_completed_successfully
+    environment:
+      <<: *airflow-env
+      _AIRFLOW_DB_MIGRATE: ""
+      _AIRFLOW_WWW_USER_CREATE: ""
+    volumes: *airflow-volumes
+    ports:
+      - "8082:8080"
+    command: webserver
+    restart: unless-stopped
+
+  spark:
+    build: ../spark
+    profiles: ["streaming"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      KAFKA_BROKERS: kafka:29092
+      REDIS_HOST: redis
+      SPARK_CHECKPOINT_DIR: /state/checkpoints
+    volumes:
+      - spark-state:/state
+    restart: unless-stopped
 
 volumes:
   zk-data:
@@ -174,3 +227,4 @@ volumes:
   minio-data:
   airflow-db-data:
   airflow-logs:
+  spark-state:
