@@ -1,0 +1,12 @@
+# Paths are relative to the Git repository root, then to the frontend base.
+[build]
+  base = "frontend"
+  command = "npm run build"
+  publish = "build"
+
+[build.environment]
+  NODE_VERSION = "22"
+
+# Set REACT_APP_API_URL to the public HTTPS backend origin in Netlify's
+# environment settings before building. Never use localhost for a public site.
+# Provider credentials belong on the backend, not in frontend variables.
