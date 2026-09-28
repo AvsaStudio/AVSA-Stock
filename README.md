@@ -1,5 +1,7 @@
 # AVSA Stock
 
+**Website:** [avsastock.netlify.app](https://avsastock.netlify.app/)
+
 AVSA Stock is a stock dashboard and data-engineering project. It combines a React interface, a Node.js/Express API, WebSocket updates, an optional Alpaca market-data adapter, and a separate Python-based streaming and reporting pipeline.
 
 The dashboard displays stock prices, recent price history, headlines, trending symbols, and analytics. The project demonstrates how an application can serve current data quickly while using separate services for historical storage, stream processing, and scheduled reports. It does not place trades.
